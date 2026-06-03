@@ -1,0 +1,69 @@
+# Excel to Excel structured comparison config.
+#
+# baseline = 我方初版 / 基准版 / 原稿
+# revised  = 乙方返回版 / 修改版 / 待核版
+
+default:
+  # auto 表示先通过 workbook profile 自动识别。
+  # 识别结果会写入 run-dir/output/suggested_config.yaml。
+  header_row: auto
+  key_columns: auto
+  ignore_columns: []
+  numeric_columns: {}
+  date_columns: []
+  case_insensitive_columns: []
+  compare_formulas: true
+  blank_values: ["", "NULL", "N/A", "NA", "-"]
+
+# 可选：只比对指定 sheet。不配置则默认比对所有 sheet。
+# include_sheets: []
+
+# 可选：排除指定 sheet。
+exclude_sheets: []
+
+# 画像读取行数。LLM 上下文仍由 planner.max_profile_* 控制；
+# 这里读多一些是为了更准确评估主键覆盖率/唯一率。
+profile_max_rows: 500
+profile_key_sample_rows: 500
+
+# 自动画像建议时，只把像“数据表”的 sheet 放入 include_sheets。
+# 不满足条件的说明页、封面页、图例页仍会出现在 workbook_profile.json，
+# 但不会默认进入正式比对计划。
+auto_include_min_data_rows: 20
+auto_include_min_columns: 8
+auto_include_min_key_unique_ratio: 0.9
+auto_include_max_duplicate_header_ratio: 0.35
+
+# 自动比对计划。
+# mode:
+#   auto     优先尝试 LLM planner，未配置或失败时使用确定性 fallback planner。
+#   fallback 只使用确定性画像 planner。
+#   llm      请求 LLM planner；失败时仍回退 fallback，保证命令可产出结果。
+planner:
+  mode: auto
+  max_profile_sheets: 12
+  max_profile_columns: 80
+  llm:
+    base_url: http://192.168.48.114:4000/v1
+    model: Qwen3.5-397B-A17B
+    api_key_env: QWEN_4000_API_KEY
+    temperature: 0.1
+    timeout_seconds: 60
+    max_tokens: 4096
+
+planner_min_key_coverage: 0.6
+planner_min_key_uniqueness: 0.7
+planner_min_executable_confidence: 0.62
+planner_min_column_mapping_score: 0.6
+
+# 通用系统默认不内置任何业务字段名。
+# 如某类业务需要字段提示词，请在业务配置文件中填写。
+key_hint_keywords: []
+id_like_keywords: []
+date_like_keywords: []
+high_risk_keywords: []
+
+# 后期接入不同业务 Excel 时，不在代码里写死字段。
+# 默认流程是一条命令直接生成差异报告；
+# workbook_profile / comparison_plan / plan_validation 会作为后置审计依据输出。
+sheets: {}

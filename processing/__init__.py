@@ -1,0 +1,2 @@
+"""Comparison and normalization logic."""
+
