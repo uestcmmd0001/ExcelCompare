@@ -8,6 +8,9 @@ default:
   # 识别结果会写入 run-dir/output/suggested_config.yaml。
   header_row: auto
   key_columns: auto
+  # 只作结构变化留痕，不参与逐格单元格比对。适合工具生成列、原始行号等。
+  structure_only_columns: []
+  # 真正完全忽略列。默认不建议使用；即使配置，列存在性变化仍会留痕。
   ignore_columns: []
   numeric_columns: {}
   date_columns: []

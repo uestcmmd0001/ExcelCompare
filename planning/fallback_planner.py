@@ -50,6 +50,7 @@ def build_fallback_plan(profile: dict[str, Any], config: dict[str, Any]) -> Comp
             key_columns=key_columns,
             column_mapping=column_mapping,
             ignore_columns=list(sheet_cfg.get("ignore_columns", []) or []),
+            structure_only_columns=list(sheet_cfg.get("structure_only_columns", []) or []),
             numeric_columns=dict(sheet_cfg.get("numeric_columns", {}) or {}),
             date_columns=list(sheet_cfg.get("date_columns", []) or []),
             compare_formulas=bool(sheet_cfg.get("compare_formulas", True)),
@@ -87,4 +88,3 @@ def _average(values: list[float]) -> float:
     if not values:
         return 0.0
     return round(sum(values) / len(values), 4)
-

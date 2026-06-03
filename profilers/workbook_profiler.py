@@ -69,12 +69,13 @@ def suggest_pair_config(
             if col in set(rev_sheet.get("columns", [])) and not _is_generated_empty_column(col)
         ]
         key_columns = _suggest_key_columns(base_sheet, rev_sheet, common_columns, config)
-        ignore_columns = _suggest_ignore_columns(base_sheet, rev_sheet)
+        structure_only_columns = _suggest_structure_only_columns(base_sheet, rev_sheet)
 
         sheet_configs[sheet_name] = {
             "header_row": header_row,
             "key_columns": key_columns,
-            "ignore_columns": ignore_columns,
+            "ignore_columns": [],
+            "structure_only_columns": structure_only_columns,
             "numeric_columns": _suggest_numeric_columns(base_sheet, rev_sheet, config),
             "date_columns": _suggest_date_columns(base_sheet, rev_sheet, config),
             "compare_formulas": True,
@@ -85,6 +86,7 @@ def suggest_pair_config(
             "header_row": "auto",
             "key_columns": "auto",
             "ignore_columns": [],
+            "structure_only_columns": [],
             "numeric_columns": {},
             "date_columns": [],
             "case_insensitive_columns": [],
@@ -360,14 +362,14 @@ def _sample_key_quality(columns: list[str], samples: list[dict[str, str]]) -> tu
     return coverage, unique
 
 
-def _suggest_ignore_columns(base_sheet: dict[str, Any], rev_sheet: dict[str, Any]) -> list[str]:
+def _suggest_structure_only_columns(base_sheet: dict[str, Any], rev_sheet: dict[str, Any]) -> list[str]:
     base_cols = set(base_sheet.get("columns", []))
     rev_cols = set(rev_sheet.get("columns", []))
-    ignore = []
+    structure_only = []
     for column in sorted((base_cols | rev_cols) - (base_cols & rev_cols)):
         if _looks_auxiliary_column(column) or _is_generated_empty_column(column):
-            ignore.append(column)
-    return ignore
+            structure_only.append(column)
+    return structure_only
 
 
 def _suggest_numeric_columns(base_sheet: dict[str, Any], rev_sheet: dict[str, Any], config: dict[str, Any]) -> dict[str, int]:

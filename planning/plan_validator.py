@@ -26,6 +26,7 @@ def validate_plan(
 
     sheet_validations: list[SheetValidation] = []
     executable_sheets: dict[str, Any] = {}
+    executable_sheet_pairs: list[dict[str, str]] = []
     include_sheets: list[str] = []
     risks: list[str] = []
 
@@ -56,10 +57,6 @@ def validate_plan(
         sheet_validations.append(validation)
         risks.extend(f"{sheet_plan.baseline_sheet}: {risk}" for risk in validation.risks)
 
-        # The current parser/diff engine supports same-name sheet execution.
-        # Cross-name matching is still reported as plan risk until the parser grows aliases.
-        if sheet_plan.baseline_sheet != sheet_plan.revised_sheet:
-            continue
         if _should_skip_execution(validation, config):
             risks.append(
                 f"{sheet_plan.baseline_sheet}: skipped from executable diff because plan validation did not pass"
@@ -67,14 +64,26 @@ def validate_plan(
             continue
 
         include_sheets.append(sheet_plan.baseline_sheet)
+        executable_sheet_pairs.append({
+            "baseline_sheet": sheet_plan.baseline_sheet,
+            "revised_sheet": sheet_plan.revised_sheet,
+        })
+        key_columns_revised = _mapped_column_list(validation.selected_key_columns, sheet_plan.column_mapping)
         executable_sheets[sheet_plan.baseline_sheet] = {
             "header_row": sheet_plan.header_row_baseline,
+            "baseline_sheet": sheet_plan.baseline_sheet,
+            "revised_sheet": sheet_plan.revised_sheet,
             "header_row_baseline": sheet_plan.header_row_baseline,
             "header_row_revised": sheet_plan.header_row_revised,
             "key_columns": validation.selected_key_columns,
+            "key_columns_baseline": validation.selected_key_columns,
+            "key_columns_revised": key_columns_revised,
+            "column_mapping": dict(sheet_plan.column_mapping),
+            "canonical_columns": _canonical_columns(sheet_plan.column_mapping),
             "ignore_columns": list(sheet_plan.ignore_columns),
-            "numeric_columns": dict(sheet_plan.numeric_columns),
-            "date_columns": list(sheet_plan.date_columns),
+            "structure_only_columns": list(sheet_plan.structure_only_columns),
+            "numeric_columns": _expand_mapped_numeric_columns(sheet_plan.numeric_columns, sheet_plan.column_mapping),
+            "date_columns": _expand_mapped_column_list(sheet_plan.date_columns, sheet_plan.column_mapping),
             "case_insensitive_columns": [],
             "compare_formulas": sheet_plan.compare_formulas,
             "plan_confidence": validation.overall_confidence,
@@ -82,8 +91,8 @@ def validate_plan(
         }
 
     effective_config = _base_effective_config(config)
-    if include_sheets:
-        effective_config["include_sheets"] = include_sheets
+    effective_config["include_sheets"] = include_sheets
+    effective_config["sheet_pairs"] = executable_sheet_pairs
     effective_config["sheets"] = executable_sheets
 
     overall = round(mean([item.overall_confidence for item in sheet_validations]), 4) if sheet_validations else 0.0
@@ -112,15 +121,43 @@ def _validate_sheet_plan(
     if header_score < 0.8:
         risks.append("header row differs or is weakly detected")
 
-    base_columns = set(baseline_sheet.get("columns", []))
-    rev_columns = set(revised_sheet.get("columns", []))
-    base_column_names = _names_by_normalized_key({column: column for column in base_columns})
-    rev_column_names = _names_by_normalized_key({column: column for column in rev_columns})
+    base_column_list = list(baseline_sheet.get("columns", []) or [])
+    rev_column_list = list(revised_sheet.get("columns", []) or [])
+    base_columns = set(base_column_list)
+    rev_columns = set(rev_column_list)
+    base_column_names = _names_by_normalized_key({column: column for column in base_column_list})
+    rev_column_names = _names_by_normalized_key({column: column for column in rev_column_list})
+    all_column_names = _names_by_normalized_key({
+        column: column
+        for column in base_column_list + rev_column_list
+    })
     mapped_columns = _resolve_column_mapping(sheet_plan, base_columns, rev_columns, base_column_names, rev_column_names)
     sheet_plan.column_mapping = dict(mapped_columns)
     column_mapping_score = round(len(mapped_columns) / max(len(base_columns | rev_columns), 1), 4)
     if column_mapping_score < 0.6:
         risks.append("low column overlap between baseline and revised")
+
+    sheet_plan.ignore_columns = _resolve_column_list(
+        sheet_plan.ignore_columns,
+        base_columns | rev_columns,
+        all_column_names,
+    )
+    sheet_plan.structure_only_columns = _resolve_column_list(
+        sheet_plan.structure_only_columns,
+        base_columns | rev_columns,
+        all_column_names,
+    )
+    _migrate_presence_only_ignored_columns(sheet_plan, base_columns, rev_columns)
+    sheet_plan.numeric_columns = _resolve_numeric_columns(
+        sheet_plan.numeric_columns,
+        base_columns | rev_columns,
+        all_column_names,
+    )
+    sheet_plan.date_columns = _resolve_column_list(
+        sheet_plan.date_columns,
+        base_columns | rev_columns,
+        all_column_names,
+    )
 
     duplicate_header_ratio = max(
         float(baseline_sheet.get("duplicate_header_ratio", 0)),
@@ -435,6 +472,108 @@ def _resolve_column_mapping(
         if resolved_rev:
             result[base_col] = resolved_rev
     return result
+
+
+def _resolve_column_list(
+    columns: list[str],
+    available_columns: set[str],
+    normalized_names: dict[str, str],
+) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    exact_names = {name: name for name in available_columns}
+    for column in columns or []:
+        resolved = _resolve_name(str(column), exact_names, normalized_names)
+        if resolved and resolved not in seen:
+            result.append(resolved)
+            seen.add(resolved)
+    return result
+
+
+def _resolve_numeric_columns(
+    columns: dict[str, Any],
+    available_columns: set[str],
+    normalized_names: dict[str, str],
+) -> dict[str, int]:
+    result: dict[str, int] = {}
+    exact_names = {name: name for name in available_columns}
+    for column, precision in (columns or {}).items():
+        resolved = _resolve_name(str(column), exact_names, normalized_names)
+        if not resolved:
+            continue
+        try:
+            result[resolved] = int(precision)
+        except (TypeError, ValueError):
+            result[resolved] = 2
+    return result
+
+
+def _mapped_column_list(columns: list[str], column_mapping: dict[str, str]) -> list[str]:
+    return [column_mapping.get(column, column) for column in columns]
+
+
+def _canonical_columns(column_mapping: dict[str, str]) -> dict[str, dict[str, str]]:
+    return {
+        baseline_column: {
+            "canonical_column": baseline_column,
+            "baseline_column": baseline_column,
+            "revised_column": revised_column,
+        }
+        for baseline_column, revised_column in column_mapping.items()
+    }
+
+
+def _expand_mapped_column_list(columns: list[str], column_mapping: dict[str, str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for column in columns:
+        for item in (column, column_mapping.get(column)):
+            if item and item not in seen:
+                result.append(item)
+                seen.add(item)
+    inverse_mapping = {revised: baseline for baseline, revised in column_mapping.items()}
+    for column in columns:
+        mapped = inverse_mapping.get(column)
+        if mapped and mapped not in seen:
+            result.append(mapped)
+            seen.add(mapped)
+    return result
+
+
+def _expand_mapped_numeric_columns(columns: dict[str, int], column_mapping: dict[str, str]) -> dict[str, int]:
+    result = dict(columns)
+    inverse_mapping = {revised: baseline for baseline, revised in column_mapping.items()}
+    for column, precision in list(columns.items()):
+        mapped = column_mapping.get(column) or inverse_mapping.get(column)
+        if mapped and mapped not in result:
+            result[mapped] = precision
+    return result
+
+
+def _migrate_presence_only_ignored_columns(
+    sheet_plan: SheetPlan,
+    base_columns: set[str],
+    rev_columns: set[str],
+) -> None:
+    """Keep legacy/LLM ignore suggestions auditable when the column exists on one side only."""
+
+    presence_only = (base_columns ^ rev_columns)
+    migrated = [column for column in sheet_plan.ignore_columns if column in presence_only]
+    if not migrated:
+        return
+
+    structure_only = list(sheet_plan.structure_only_columns)
+    seen = set(structure_only)
+    for column in migrated:
+        if column not in seen:
+            structure_only.append(column)
+            seen.add(column)
+
+    sheet_plan.structure_only_columns = structure_only
+    sheet_plan.ignore_columns = [
+        column for column in sheet_plan.ignore_columns
+        if column not in presence_only
+    ]
 
 
 def _resolve_name(name: str, exact_names: dict[str, Any], normalized_names: dict[str, str]) -> str | None:

@@ -13,10 +13,16 @@ from compare_excel_to_excel.models.schemas import ExcelCell, ExcelRow, ExcelShee
 from compare_excel_to_excel.processing.normalizer import normalize_value
 
 
-def parse_workbook(path: str | Path, config: dict[str, Any], role: str | None = None) -> ExcelWorkbook:
+def parse_workbook(
+    path: str | Path,
+    config: dict[str, Any],
+    role: str | None = None,
+    *,
+    include_all_sheets: bool = False,
+) -> ExcelWorkbook:
     workbook_path = Path(path)
     if workbook_path.suffix.lower() == ".xls":
-        return _parse_xls_workbook(workbook_path, config, role)
+        return _parse_xls_workbook(workbook_path, config, role, include_all_sheets=include_all_sheets)
     if workbook_path.suffix.lower() != ".xlsx":
         raise ValueError(f"Only .xlsx/.xls is supported: {workbook_path}")
 
@@ -25,7 +31,7 @@ def parse_workbook(path: str | Path, config: dict[str, Any], role: str | None = 
     sheets: dict[str, ExcelSheet] = {}
 
     for ws in wb.worksheets:
-        if not should_compare_sheet(config, ws.title):
+        if not include_all_sheets and not should_compare_sheet(config, ws.title):
             continue
         rule = get_sheet_rule(config, ws.title, role)
         rule = resolve_auto_rule(rule, _xlsx_preview_rows(ws), config)
@@ -35,7 +41,13 @@ def parse_workbook(path: str | Path, config: dict[str, Any], role: str | None = 
     return ExcelWorkbook(path=str(workbook_path), sheets=sheets)
 
 
-def _parse_xls_workbook(workbook_path: Path, config: dict[str, Any], role: str | None = None) -> ExcelWorkbook:
+def _parse_xls_workbook(
+    workbook_path: Path,
+    config: dict[str, Any],
+    role: str | None = None,
+    *,
+    include_all_sheets: bool = False,
+) -> ExcelWorkbook:
     try:
         import xlrd
     except ImportError as exc:  # pragma: no cover - dependency failure path
@@ -44,7 +56,7 @@ def _parse_xls_workbook(workbook_path: Path, config: dict[str, Any], role: str |
     wb = xlrd.open_workbook(str(workbook_path), formatting_info=True)
     sheets: dict[str, ExcelSheet] = {}
     for ws in wb.sheets():
-        if not should_compare_sheet(config, ws.name):
+        if not include_all_sheets and not should_compare_sheet(config, ws.name):
             continue
         rule = get_sheet_rule(config, ws.name, role)
         rule = resolve_auto_rule(rule, _xls_preview_rows(ws), config)

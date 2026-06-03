@@ -17,6 +17,7 @@ class SheetPlan:
     key_columns: list[str] = field(default_factory=list)
     column_mapping: dict[str, str] = field(default_factory=dict)
     ignore_columns: list[str] = field(default_factory=list)
+    structure_only_columns: list[str] = field(default_factory=list)
     numeric_columns: dict[str, int] = field(default_factory=dict)
     date_columns: list[str] = field(default_factory=list)
     compare_formulas: bool = True
@@ -87,4 +88,3 @@ def to_dict(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: to_dict(item) for key, item in value.items()}
     return value
-

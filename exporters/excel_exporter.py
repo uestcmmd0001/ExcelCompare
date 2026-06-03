@@ -61,6 +61,7 @@ def export_excel(
 
     if comparison_plan is not None or plan_validation is not None:
         _write_plan_sheet(wb.create_sheet("比对计划说明"), comparison_plan, plan_validation)
+        _write_plan_comparison_sheet(wb.create_sheet("计划对比"), comparison_plan, plan_validation)
         _write_plan_risk_sheet(wb.create_sheet("计划风险"), plan_validation)
 
     sheet_defs = [
@@ -144,7 +145,8 @@ def _write_plan_sheet(ws, comparison_plan: Any | None, plan_validation: Any | No
         "表头行 baseline",
         "表头行 revised",
         "采用主键",
-        "忽略列",
+        "只作结构留痕列",
+        "完全忽略列",
         "数字列",
         "日期列",
         "sheet匹配分",
@@ -175,6 +177,7 @@ def _write_plan_sheet(ws, comparison_plan: Any | None, plan_validation: Any | No
             sheet_plan.get("header_row_baseline", ""),
             sheet_plan.get("header_row_revised", ""),
             ", ".join(validation_item.get("selected_key_columns") or sheet_plan.get("key_columns") or []),
+            ", ".join(sheet_plan.get("structure_only_columns") or []),
             ", ".join(sheet_plan.get("ignore_columns") or []),
             _format_mapping(sheet_plan.get("numeric_columns") or {}),
             ", ".join(sheet_plan.get("date_columns") or []),
@@ -192,10 +195,69 @@ def _write_plan_sheet(ws, comparison_plan: Any | None, plan_validation: Any | No
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.alignment = Alignment(wrap_text=True, vertical="top")
 
-    widths = [22, 22, 12, 12, 28, 28, 24, 24, 12, 12, 12, 12, 12, 12, 12, 42, 52]
+    widths = [22, 22, 12, 12, 28, 30, 24, 24, 24, 12, 12, 12, 12, 12, 12, 12, 42, 52]
     for col_idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
     ws.freeze_panes = f"A{start + 1}"
+    ws.auto_filter.ref = ws.dimensions
+
+
+def _write_plan_comparison_sheet(ws, comparison_plan: Any | None, plan_validation: Any | None) -> None:
+    plan = to_dict(comparison_plan) if comparison_plan is not None else {}
+    validation = to_dict(plan_validation) if plan_validation is not None else {}
+    primary = plan.get("primary_plan", {}) or {}
+    alternatives = plan.get("alternative_plans", []) or []
+
+    headers = [
+        "计划角色",
+        "计划ID",
+        "规划器",
+        "策略",
+        "计划置信度",
+        "Sheet数量",
+        "Sheet对",
+        "主键摘要",
+        "结构留痕列摘要",
+        "完全忽略列摘要",
+        "校验后整体置信度",
+        "说明/不确定点",
+    ]
+    for col_idx, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color="D9EAF7", end_color="D9EAF7", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center", wrap_text=True)
+
+    rows = [("primary", primary)]
+    rows.extend((f"alternative_{idx}", item) for idx, item in enumerate(alternatives, start=1))
+
+    for row_idx, (role, candidate) in enumerate(rows, start=2):
+        sheet_pairs = candidate.get("sheet_pairs", []) or []
+        row = [
+            role,
+            candidate.get("candidate_id", ""),
+            plan.get("planner", ""),
+            candidate.get("strategy", ""),
+            candidate.get("confidence", ""),
+            len(sheet_pairs),
+            _sheet_pair_summary(sheet_pairs),
+            _sheet_pair_field_summary(sheet_pairs, "key_columns"),
+            _sheet_pair_field_summary(sheet_pairs, "structure_only_columns"),
+            _sheet_pair_field_summary(sheet_pairs, "ignore_columns"),
+            validation.get("overall_confidence", "") if role == "primary" else "",
+            "；".join((candidate.get("reasons") or []) + (candidate.get("uncertainties") or [])),
+        ]
+        for col_idx, value in enumerate(row, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    if not rows:
+        ws.cell(row=2, column=1, value="未生成可对比计划")
+
+    widths = [14, 22, 20, 30, 12, 10, 34, 34, 34, 28, 16, 70]
+    for col_idx, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
 
 
@@ -282,6 +344,7 @@ def _type_label(diff_type: str) -> str:
         "cell_modified": "单元格修改",
         "formula_modified": "公式修改",
         "duplicate_key": "主键重复",
+        "duplicate_key_rows_skipped": "重复主键跳过逐格比对",
     }.get(diff_type, diff_type)
 
 
@@ -291,6 +354,22 @@ def _severity_label(severity: str) -> str:
 
 def _format_mapping(mapping: dict[str, Any]) -> str:
     return "；".join(f"{key}:{value}" for key, value in mapping.items())
+
+
+def _sheet_pair_summary(sheet_pairs: list[dict[str, Any]]) -> str:
+    parts = []
+    for item in sheet_pairs:
+        parts.append(f"{item.get('baseline_sheet', '')} -> {item.get('revised_sheet', '')}")
+    return "；".join(parts)
+
+
+def _sheet_pair_field_summary(sheet_pairs: list[dict[str, Any]], field_name: str) -> str:
+    parts = []
+    for item in sheet_pairs:
+        values = item.get(field_name) or []
+        if values:
+            parts.append(f"{item.get('baseline_sheet', '')}: {', '.join(values)}")
+    return "；".join(parts)
 
 
 def _fill_color(item: DiffItem) -> str:

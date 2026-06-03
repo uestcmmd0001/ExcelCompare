@@ -28,7 +28,7 @@ def load_config(config_path: str | Path | None) -> dict[str, Any]:
 
 def get_sheet_rule(config: dict[str, Any], sheet_name: str, role: str | None = None) -> SheetRule:
     default_cfg = config.get("default", {}) or {}
-    sheet_cfg = (config.get("sheets", {}) or {}).get(sheet_name, {}) or {}
+    sheet_cfg = _get_sheet_config(config, sheet_name, role)
 
     def _get(name: str, default: Any = None) -> Any:
         return sheet_cfg.get(name, default_cfg.get(name, default))
@@ -37,6 +37,8 @@ def get_sheet_rule(config: dict[str, Any], sheet_name: str, role: str | None = N
     if role in ("baseline", "revised"):
         header_row = _get(f"header_row_{role}", header_row)
     key_columns_cfg = _get("key_columns", [])
+    if role in ("baseline", "revised"):
+        key_columns_cfg = _get(f"key_columns_{role}", key_columns_cfg)
     if key_columns_cfg == "auto":
         key_columns = ["auto"]
     else:
@@ -46,13 +48,28 @@ def get_sheet_rule(config: dict[str, Any], sheet_name: str, role: str | None = N
         sheet_name=sheet_name,
         header_row=header_row,
         key_columns=key_columns,
+        column_mapping=dict(_get("column_mapping", {}) or {}),
         ignore_columns=list(_get("ignore_columns", []) or []),
+        structure_only_columns=list(_get("structure_only_columns", []) or []),
         numeric_columns=dict(_get("numeric_columns", {}) or {}),
         date_columns=list(_get("date_columns", []) or []),
         case_insensitive_columns=list(_get("case_insensitive_columns", []) or []),
         compare_formulas=bool(_get("compare_formulas", True)),
         blank_values=list(_get("blank_values", ["", "NULL", "N/A", "NA", "-"]) or []),
     )
+
+
+def _get_sheet_config(config: dict[str, Any], sheet_name: str, role: str | None = None) -> dict[str, Any]:
+    sheets_cfg = config.get("sheets", {}) or {}
+    sheet_cfg = sheets_cfg.get(sheet_name, {}) or {}
+    if sheet_cfg or role not in ("baseline", "revised"):
+        return sheet_cfg
+
+    role_key = f"{role}_sheet"
+    for candidate in sheets_cfg.values():
+        if isinstance(candidate, dict) and candidate.get(role_key) == sheet_name:
+            return candidate
+    return {}
 
 
 def should_compare_sheet(config: dict[str, Any], sheet_name: str) -> bool:

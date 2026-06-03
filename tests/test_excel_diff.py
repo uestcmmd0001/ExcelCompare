@@ -147,7 +147,7 @@ class ExcelDiffTests(unittest.TestCase):
             diffs = diff_workbooks(baseline_wb, revised_wb, suggested)
             self.assertEqual(_types(diffs), ["cell_modified"])
 
-    def test_effective_config_ignores_suggested_auxiliary_columns(self) -> None:
+    def test_effective_config_keeps_legacy_ignore_columns_compatible(self) -> None:
         from compare_excel_to_excel.main import _merge_config
 
         suggested = {
@@ -197,7 +197,39 @@ class ExcelDiffTests(unittest.TestCase):
             self.assertEqual(len(diffs), 1)
             self.assertEqual(diffs[0].diff_type, "column_added")
             self.assertEqual(diffs[0].result_layer, "structure_change")
+            self.assertEqual(diffs[0].details["ignore_policy"], "ignored")
             self.assertTrue(diffs[0].need_human_review)
+
+    def test_structure_only_column_added_is_reported_but_not_cell_compared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 100],
+            ])
+            _write_workbook(revised, [
+                ["0aux_source", "record_id", "item_id", "metric_value"],
+                ["row-1", "A001", "M1", 100],
+            ])
+
+            config = {
+                "default": {
+                    "header_row": 1,
+                    "key_columns": ["record_id", "item_id"],
+                    "structure_only_columns": ["0aux_source"],
+                }
+            }
+            baseline_wb = parse_workbook(baseline, config)
+            revised_wb = parse_workbook(revised, config)
+            diffs = diff_workbooks(baseline_wb, revised_wb, config)
+
+            self.assertEqual(len(diffs), 1)
+            self.assertEqual(diffs[0].diff_type, "column_added")
+            self.assertEqual(diffs[0].result_layer, "structure_change")
+            self.assertEqual(diffs[0].rule_source, "column_presence_structure_only")
+            self.assertEqual(diffs[0].details["ignore_policy"], "structure_only")
 
     def test_duplicate_key_is_match_risk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,9 +249,33 @@ class ExcelDiffTests(unittest.TestCase):
             revised_wb = parse_workbook(revised, config)
             diffs = diff_workbooks(baseline_wb, revised_wb, config)
 
-            self.assertEqual(len(diffs), 1)
-            self.assertEqual(diffs[0].diff_type, "duplicate_key")
-            self.assertEqual(diffs[0].result_layer, "match_risk")
+            self.assertEqual(_types(diffs), ["duplicate_key", "duplicate_key_rows_skipped"])
+            self.assertTrue(all(diff.result_layer == "match_risk" for diff in diffs))
+
+    def test_duplicate_key_skips_confirmed_cell_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "metric_desc", "metric_value"],
+                ["A001", "first", 100],
+                ["A001", "second", 200],
+            ])
+            _write_workbook(revised, [
+                ["record_id", "metric_desc", "metric_value"],
+                ["A001", "first", 999],
+                ["A001", "second", 200],
+            ])
+
+            config = {"default": {"header_row": 1, "key_columns": ["record_id"]}}
+            baseline_wb = parse_workbook(baseline, config)
+            revised_wb = parse_workbook(revised, config)
+            diffs = diff_workbooks(baseline_wb, revised_wb, config)
+
+            self.assertIn("duplicate_key", _types(diffs))
+            self.assertIn("duplicate_key_rows_skipped", _types(diffs))
+            self.assertNotIn("cell_modified", _types(diffs))
 
     def test_fallback_plan_builds_valid_effective_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -410,6 +466,62 @@ class ExcelDiffTests(unittest.TestCase):
                 ["record_id", "item_id"],
             )
 
+    def test_validator_migrates_presence_only_ignore_columns_to_structure_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 100],
+            ])
+            _write_workbook(revised, [
+                ["0aux_source", "record_id", "item_id", "metric_value"],
+                ["row-1", "A001", "M1", 100],
+            ])
+
+            from compare_excel_to_excel.planning.plan_schema import ComparisonPlan, PlanCandidate, SheetPlan
+            from compare_excel_to_excel.planning.plan_validator import validate_plan
+            from compare_excel_to_excel.profilers.workbook_profiler import profile_workbook_pair
+
+            config = {
+                "default": {"header_row": "auto", "key_columns": "auto"},
+                "auto_include_min_data_rows": 1,
+                "auto_include_min_columns": 2,
+                "auto_include_min_key_unique_ratio": 0.5,
+            }
+            profile = profile_workbook_pair(baseline, revised, config)
+            plan = ComparisonPlan(
+                version="1.0",
+                planner="test_llm",
+                source="llm",
+                primary_plan=PlanCandidate(
+                    candidate_id="test",
+                    strategy="test",
+                    confidence=0.8,
+                    sheet_pairs=[
+                        SheetPlan(
+                            baseline_sheet="DataSheet",
+                            revised_sheet="DataSheet",
+                            header_row_baseline=1,
+                            header_row_revised=1,
+                            key_columns=["record_id", "item_id"],
+                            column_mapping={
+                                "record_id": "record_id",
+                                "item_id": "item_id",
+                                "metric_value": "metric_value",
+                            },
+                            ignore_columns=["0 aux source"],
+                        )
+                    ],
+                ),
+            )
+            validation = validate_plan(plan, profile, config)
+            sheet_cfg = validation.effective_config["sheets"]["DataSheet"]
+
+            self.assertEqual(sheet_cfg["ignore_columns"], [])
+            self.assertEqual(sheet_cfg["structure_only_columns"], ["0aux_source"])
+
     def test_validator_skips_matrix_sheet_from_executable_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             baseline = Path(tmp) / "baseline.xlsx"
@@ -452,8 +564,177 @@ class ExcelDiffTests(unittest.TestCase):
             )
             validation = validate_plan(plan, profile, config)
 
-            self.assertNotIn("include_sheets", validation.effective_config)
+            self.assertEqual(validation.effective_config["include_sheets"], [])
             self.assertIn("skipped from executable diff", " ".join(validation.risks))
+
+    def test_skipped_executable_sheets_do_not_fall_back_to_deep_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 100],
+            ])
+            _write_workbook(revised, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 999],
+            ])
+
+            config = {
+                "default": {"header_row": 1, "key_columns": ["record_id", "item_id"]},
+                "include_sheets": [],
+            }
+            baseline_wb = parse_workbook(baseline, config, include_all_sheets=True)
+            revised_wb = parse_workbook(revised, config, include_all_sheets=True)
+            diffs = diff_workbooks(baseline_wb, revised_wb, config)
+
+            self.assertEqual(diffs, [])
+
+    def test_sheet_added_deleted_are_reported_outside_executable_sheet_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 100],
+            ], extra_sheet=True)
+            _write_workbook(revised, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 100],
+            ])
+            _add_sheet(revised, "新增表")
+
+            config = {
+                "default": {"header_row": 1, "key_columns": ["record_id", "item_id"]},
+                "include_sheets": ["DataSheet"],
+            }
+            baseline_wb = parse_workbook(baseline, config, include_all_sheets=True)
+            revised_wb = parse_workbook(revised, config, include_all_sheets=True)
+            diffs = diff_workbooks(baseline_wb, revised_wb, config)
+
+            self.assertIn("sheet_added", _types(diffs))
+            self.assertIn("sheet_deleted", _types(diffs))
+
+    def test_column_mapping_compares_renamed_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "item_id", "old_metric"],
+                ["A001", "M1", 100],
+            ])
+            _write_workbook(revised, [
+                ["record_id", "item_id", "new_metric"],
+                ["A001", "M1", 120],
+            ])
+
+            config = {
+                "default": {"header_row": 1, "key_columns": ["record_id", "item_id"]},
+                "sheets": {
+                    "DataSheet": {
+                        "column_mapping": {
+                            "record_id": "record_id",
+                            "item_id": "item_id",
+                            "old_metric": "new_metric",
+                        }
+                    }
+                },
+            }
+            baseline_wb = parse_workbook(baseline, config)
+            revised_wb = parse_workbook(revised, config)
+            diffs = diff_workbooks(baseline_wb, revised_wb, config)
+
+            self.assertEqual(_types(diffs), ["cell_modified"])
+            self.assertEqual(diffs[0].column_name, "old_metric -> new_metric")
+            self.assertEqual(diffs[0].old_value, "100")
+            self.assertEqual(diffs[0].new_value, "120")
+
+    def test_cross_name_sheet_pair_is_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_named_workbook(baseline, "OldSheet", [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 100],
+            ])
+            _write_named_workbook(revised, "NewSheet", [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", 120],
+            ])
+
+            from compare_excel_to_excel.planning.plan_schema import ComparisonPlan, PlanCandidate, SheetPlan
+            from compare_excel_to_excel.planning.plan_validator import validate_plan
+            from compare_excel_to_excel.profilers.workbook_profiler import profile_workbook_pair
+
+            config = {
+                "default": {"header_row": "auto", "key_columns": "auto"},
+                "auto_include_min_data_rows": 1,
+                "auto_include_min_columns": 2,
+                "auto_include_min_key_unique_ratio": 0.5,
+            }
+            profile = profile_workbook_pair(baseline, revised, config)
+            plan = ComparisonPlan(
+                version="1.0",
+                planner="test_llm",
+                source="llm",
+                primary_plan=PlanCandidate(
+                    candidate_id="test",
+                    strategy="sheet_alias",
+                    confidence=0.8,
+                    sheet_pairs=[
+                        SheetPlan(
+                            baseline_sheet="OldSheet",
+                            revised_sheet="NewSheet",
+                            header_row_baseline=1,
+                            header_row_revised=1,
+                            key_columns=["record_id", "item_id"],
+                            column_mapping={
+                                "record_id": "record_id",
+                                "item_id": "item_id",
+                                "metric_value": "metric_value",
+                            },
+                        )
+                    ],
+                ),
+            )
+            validation = validate_plan(plan, profile, config)
+
+            self.assertEqual(
+                validation.effective_config["sheet_pairs"],
+                [{"baseline_sheet": "OldSheet", "revised_sheet": "NewSheet"}],
+            )
+
+            baseline_wb = parse_workbook(baseline, validation.effective_config, role="baseline", include_all_sheets=True)
+            revised_wb = parse_workbook(revised, validation.effective_config, role="revised", include_all_sheets=True)
+            diffs = diff_workbooks(baseline_wb, revised_wb, validation.effective_config)
+
+            self.assertEqual(_types(diffs), ["cell_modified"])
+            self.assertEqual(diffs[0].sheet_name, "OldSheet -> NewSheet")
+            self.assertEqual(diffs[0].details["baseline_sheet"], "OldSheet")
+            self.assertEqual(diffs[0].details["revised_sheet"], "NewSheet")
+            self.assertEqual(diffs[0].details["canonical_column"], "metric_value")
+
+    def test_formula_text_change_without_cached_value_is_not_double_counted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = Path(tmp) / "baseline.xlsx"
+            revised = Path(tmp) / "revised.xlsx"
+
+            _write_workbook(baseline, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", "=10*2"],
+            ])
+            _write_workbook(revised, [
+                ["record_id", "item_id", "metric_value"],
+                ["A001", "M1", "=10*3"],
+            ])
+
+            diffs = _run_diff(baseline, revised)
+
+            self.assertEqual(_types(diffs), ["formula_modified"])
 
 
 def _run_diff(baseline: Path, revised: Path):
@@ -481,6 +762,25 @@ def _write_workbook(path: Path, rows: list[list], extra_sheet: bool = False) -> 
         extra = wb.create_sheet("附表")
         extra.append(["字段"])
         extra.append(["值"])
+    wb.save(path)
+
+
+def _write_named_workbook(path: Path, sheet_name: str, rows: list[list]) -> None:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+
+
+def _add_sheet(path: Path, title: str) -> None:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path)
+    ws = wb.create_sheet(title)
+    ws.append(["record_id", "item_id", "metric_value"])
+    ws.append(["A999", "M9", 9])
     wb.save(path)
 
 

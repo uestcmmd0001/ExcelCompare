@@ -85,7 +85,7 @@ def main() -> None:
 
     profile = profile_workbook_pair(args.baseline, args.revised, config)
     suggested_config = profile["suggested_config"]
-    comparison_plan = build_comparison_plan(profile, config)
+    comparison_plan = build_comparison_plan(profile, config, output_dir=output_dir)
     plan_validation = validate_plan(comparison_plan, profile, config)
     effective_config = _merge_config(plan_validation.effective_config, config)
 
@@ -103,8 +103,8 @@ def main() -> None:
         logger.info("profile-only 模式，已生成自动计划诊断，跳过差异比对")
         return
 
-    baseline = parse_workbook(args.baseline, effective_config, role="baseline")
-    revised = parse_workbook(args.revised, effective_config, role="revised")
+    baseline = parse_workbook(args.baseline, effective_config, role="baseline", include_all_sheets=True)
+    revised = parse_workbook(args.revised, effective_config, role="revised", include_all_sheets=True)
     logger.info("baseline sheets: %s", ", ".join(baseline.sheets))
     logger.info("revised sheets: %s", ", ".join(revised.sheets))
 

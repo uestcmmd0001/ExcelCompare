@@ -23,7 +23,8 @@ profile -> comparison_plan -> plan_validate -> effective_config -> diff -> audit
 - 支持多 sheet。
 - 支持自动识别表头行，并允许配置覆盖。
 - 支持自动建议业务主键列，并允许配置覆盖。
-- 支持配置忽略列。
+- 支持只作结构变化留痕的辅助列，不参与逐格单元格比对。
+- 支持配置真正忽略列，但默认不建议使用。
 - 支持数字精度、日期、大小写不敏感等基础标准化。
 - 支持 sheet 新增/删除。
 - 支持列新增/删除。
@@ -33,7 +34,7 @@ profile -> comparison_plan -> plan_validate -> effective_config -> diff -> audit
 - 支持公式修改。
 - 支持自动生成 `comparison_plan.json`。
 - 支持程序校验计划并输出 `plan_validation.json`。
-- 支持报告中展示“比对计划说明”和“计划风险”。
+- 支持报告中展示“比对计划说明”“计划对比”和“计划风险”。
 - 输出 `diff_results.json` 和 `diff_results.xlsx`。
 
 ## 推荐运行方式
@@ -63,7 +64,8 @@ runs/excel_to_excel_test/logs/excel_compare.log
 
 `diff_results.xlsx` 中除了差异明细，还会包含：
 
-- `比对计划说明`：系统采用了哪些 sheet、表头行、主键列、忽略列、数字/日期列，以及各项校验分。
+- `比对计划说明`：系统采用了哪些 sheet、表头行、主键列、只作结构留痕列、真正忽略列、数字/日期列，以及各项校验分。
+- `计划对比`：展示 LLM 主计划、确定性 fallback 计划、最终校验计划之间的关键差异。
 - `计划风险`：主键弱、列映射弱、类型不一致、sheet 无法可靠匹配等风险。
 
 ### 诊断模式
@@ -110,6 +112,7 @@ python3 -m compare_excel_to_excel.main \
 default:
   header_row: auto
   key_columns: auto
+  structure_only_columns: []
   ignore_columns: []
   numeric_columns: {}
   date_columns: []
@@ -129,19 +132,30 @@ sheets: {}
 
 LLM planner 只负责生成比对计划，不直接输出差异事实。单元格差异仍由确定性 diff 引擎计算。
 
+### structure_only_columns 与 ignore_columns
+
+审计语义上，两者不要混用：
+
+- `structure_only_columns`：列新增/删除必须报告为结构变化，但该列不参与逐格单元格比对。适合原始行号、工具生成辅助列、导入批次列等。
+- `ignore_columns`：真正完全忽略列。默认应为空，只在明确业务规则要求时配置。即便列存在性变化，系统仍会留痕，避免静默吞掉结构变化。
+
+LLM planner 会优先使用 `structure_only_columns`。如果模型误把单侧新增列放进 `ignore_columns`，validator 会把它迁移到 `structure_only_columns`，以保证结构变化可审计。
+
 ## 报告结构
 
 Excel 报告包含：
 
 - `汇总`
 - `确认差异`
+- `结构变化`
+- `比对计划说明`
+- `计划对比`
+- `计划风险`
+- `匹配风险`
 - `需人工复核`
 - `新增行`
 - `删除行`
 - `修改单元格`
-- `结构变化`
-- `比对计划说明`
-- `计划风险`
 - `全部结果`
 
 字段包含 sheet、业务主键、原行号、新行号、列名、原值、新值、说明、规则来源等，方便后续接 API 或前端。

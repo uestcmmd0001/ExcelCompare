@@ -13,7 +13,9 @@ class SheetRule:
     sheet_name: str
     header_row: int | str = "auto"
     key_columns: list[str] = field(default_factory=list)
+    column_mapping: dict[str, str] = field(default_factory=dict)
     ignore_columns: list[str] = field(default_factory=list)
+    structure_only_columns: list[str] = field(default_factory=list)
     numeric_columns: dict[str, int] = field(default_factory=dict)
     date_columns: list[str] = field(default_factory=list)
     case_insensitive_columns: list[str] = field(default_factory=list)
